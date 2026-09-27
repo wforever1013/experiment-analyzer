@@ -87,7 +87,21 @@ if uploaded_files:
     else:
         if st.button("🚀 開始批次辨識與分析", type="primary"):
             genai.configure(api_key=api_key.strip())
-            model = genai.GenerativeModel('gemini-1.5-flash')
+            
+            # 自動選擇當前金鑰可用之最佳視覺模型
+            chosen_model_name = None
+            try:
+                available_models = [m.name for m in genai.list_models() if 'generateContent' in m.supported_generation_methods]
+                for preferred in ['models/gemini-2.5-flash', 'models/gemini-2.0-flash', 'models/gemini-1.5-flash', 'models/gemini-1.5-pro']:
+                    if preferred in available_models:
+                        chosen_model_name = preferred
+                        break
+                if not chosen_model_name and available_models:
+                    chosen_model_name = available_models[0]
+            except Exception:
+                chosen_model_name = 'gemini-2.5-flash'
+                
+            model = genai.GenerativeModel(chosen_model_name)
             results = []
             
             progress_bar = st.progress(0)
@@ -114,7 +128,7 @@ if uploaded_files:
             """
 
             for idx, file in enumerate(uploaded_files):
-                status_text.text(f"正在分析第 {idx + 1}/{len(uploaded_files)} 個檔案：{file.name}...")
+                status_text.text(f"正在分析第 {idx + 1}/{len(uploaded_files)} 個檔案：{file.name} (模型: {chosen_model_name})...")
                 try:
                     file_bytes = file.read()
                     content_parts = []
@@ -130,7 +144,6 @@ if uploaded_files:
 
                     response = model.generate_content(content_parts)
                     raw_text = response.text.strip()
-                    # 去除可能包含的 markdown 標籤
                     raw_text = re.sub(r'^```json\s*', '', raw_text)
                     raw_text = re.sub(r'^```\s*', '', raw_text)
                     raw_text = re.sub(r'\s*```$', '', raw_text)
