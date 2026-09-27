@@ -88,8 +88,17 @@ if uploaded_files:
         if st.button("🚀 開始批次辨識與分析", type="primary"):
             genai.configure(api_key=api_key.strip())
             
-            # 使用目前官方最穩定通用的視覺模型
-            model = genai.GenerativeModel('gemini-2.0-flash')
+            # 動態獲取當前 API Key 真正支援的最新可用模型
+            available_models = [
+                m.name for m in genai.list_models() 
+                if 'generateContent' in m.supported_generation_methods
+            ]
+            
+            # 優先挑選 flash 類型的模型，若無則挑選第一個可用模型
+            flash_models = [m for m in available_models if 'flash' in m.lower()]
+            selected_model_name = flash_models[0] if flash_models else available_models[0]
+            
+            model = genai.GenerativeModel(selected_model_name)
             results = []
             
             progress_bar = st.progress(0)
@@ -116,7 +125,7 @@ if uploaded_files:
             """
 
             for idx, file in enumerate(uploaded_files):
-                status_text.text(f"正在分析第 {idx + 1}/{len(uploaded_files)} 個檔案：{file.name}...")
+                status_text.text(f"正在分析第 {idx + 1}/{len(uploaded_files)} 個檔案：{file.name} (使用模型: {selected_model_name})...")
                 try:
                     file_bytes = file.read()
                     content_parts = []
