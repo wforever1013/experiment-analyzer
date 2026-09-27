@@ -2,10 +2,10 @@ import streamlit as st
 import pandas as pd
 import json
 import io
+import re
 import pypdfium2 as pdfium
 from PIL import Image
-from google import genai
-from google.genai import types
+import google.generativeai as genai
 
 st.set_page_config(page_title="嬰幼兒聽知覺實驗報表分析系統", layout="wide")
 
@@ -69,12 +69,12 @@ def convert_pdf_to_images(pdf_bytes):
     pdf = pdfium.PdfDocument(pdf_bytes)
     images = []
     for page in pdf:
-        bitmap = page.render(scale=2.0)  # 2倍解析度確保清晰度
+        bitmap = page.render(scale=2.0)
         pil_image = bitmap.to_pil()
         images.append(pil_image)
     return images
 
-# 檔案上傳區（加入 pdf 支援）
+# 檔案上傳區
 uploaded_files = st.file_uploader(
     "請選擇或拖曳上傳報表（支援 2 頁式 PDF 或多張 JPG/PNG 圖片）", 
     type=["pdf", "jpg", "jpeg", "png"], 
@@ -86,7 +86,8 @@ if uploaded_files:
         st.warning("⚠️ 請先在左側欄位輸入 Gemini API Key 才能開始辨識分析。")
     else:
         if st.button("🚀 開始批次辨識與分析", type="primary"):
-            client = genai.Client(api_key=api_key)
+            genai.configure(api_key=api_key.strip())
+            model = genai.GenerativeModel('gemini-1.5-flash')
             results = []
             
             progress_bar = st.progress(0)
@@ -119,25 +120,22 @@ if uploaded_files:
                     content_parts = []
 
                     if file.name.lower().endswith('.pdf'):
-                        # PDF 轉圖片
                         pil_images = convert_pdf_to_images(file_bytes)
-                        for img in pil_images:
-                            buf = io.BytesIO()
-                            img.save(buf, format="JPEG")
-                            content_parts.append(types.Part.from_bytes(data=buf.getvalue(), mime_type="image/jpeg"))
+                        content_parts.extend(pil_images)
                     else:
-                        # 一般圖檔
-                        mime_type = file.type or "image/jpeg"
-                        content_parts.append(types.Part.from_bytes(data=file_bytes, mime_type=mime_type))
+                        img = Image.open(io.BytesIO(file_bytes))
+                        content_parts.append(img)
 
                     content_parts.append(prompt)
 
-                    response = client.models.generate_content(
-                        model='gemini-1.5-flash',
-                        contents=content_parts,
-                        config=types.GenerateContentConfig(response_mime_type="application/json")
-                    )
-                    data = json.loads(response.text)
+                    response = model.generate_content(content_parts)
+                    raw_text = response.text.strip()
+                    # 去除可能包含的 markdown 標籤
+                    raw_text = re.sub(r'^```json\s*', '', raw_text)
+                    raw_text = re.sub(r'^```\s*', '', raw_text)
+                    raw_text = re.sub(r'\s*```$', '', raw_text)
+
+                    data = json.loads(raw_text)
                     stats = calculate_criterion_7(data.get("trials", []))
 
                     results.append({
