@@ -2,6 +2,7 @@ import streamlit as st
 import pandas as pd
 import json
 import io
+import pypdfium2 as pdfium
 from PIL import Image
 from google import genai
 from google.genai import types
@@ -9,12 +10,12 @@ from google.genai import types
 st.set_page_config(page_title="嬰幼兒聽知覺實驗報表分析系統", layout="wide")
 
 st.title("👶 嬰幼兒聽知覺實驗報表分析系統")
-st.markdown("自動排除 `abort` 與 `wake-up` 試次，辨識印刷與手寫塗改，判斷是否達成連續 7 次正確（Hit 或 Correct Reject）。")
+st.markdown("支援 **PDF（自動合併 Page 1 與 Page 2）** 及一般圖片。自動排除 `abort` 與 `wake-up` 試次，辨識手寫塗改並計算連續 7 次正確。")
 
 # 側邊欄設定
 with st.sidebar:
     st.header("⚙️ 系統設定")
-    api_key = st.text_input("請輸入 Gemini API Key", type="password", help="用於辨識照片表格與手寫筆跡")
+    api_key = st.text_input("請輸入 Gemini API Key", type="password", help="用於辨識報表與手寫筆跡")
     st.markdown("[👉 點此免費取得 Gemini API Key](https://aistudio.google.com/app/apikey)")
 
 def calculate_criterion_7(trials):
@@ -63,10 +64,20 @@ def calculate_criterion_7(trials):
         "valid_count": len(valid_trials)
     }
 
-# 檔案上傳區
+def convert_pdf_to_images(pdf_bytes):
+    """將 PDF 各頁轉為 PIL Image 列表"""
+    pdf = pdfium.PdfDocument(pdf_bytes)
+    images = []
+    for page in pdf:
+        bitmap = page.render(scale=2.0)  # 2倍解析度確保清晰度
+        pil_image = bitmap.to_pil()
+        images.append(pil_image)
+    return images
+
+# 檔案上傳區（加入 pdf 支援）
 uploaded_files = st.file_uploader(
-    "請選擇或拖曳上傳報表照片（支援多張同時上傳）", 
-    type=["jpg", "jpeg", "png"], 
+    "請選擇或拖曳上傳報表（支援 2 頁式 PDF 或多張 JPG/PNG 圖片）", 
+    type=["pdf", "jpg", "jpeg", "png"], 
     accept_multiple_files=True
 )
 
@@ -82,7 +93,8 @@ if uploaded_files:
             status_text = st.empty()
 
             prompt = """
-            請分析這份嬰幼兒聽知覺實驗報表。提取以下資訊並輸出成純 JSON 格式（不要包含 markdown）：
+            請分析這份嬰幼兒聽知覺實驗報表（若有多頁請跨頁合併所有試次，通常有 30 題左右）。
+            提取以下資訊並輸出成純 JSON 格式（不要包含 markdown）：
             {
               "subject_id": "受試者代號",
               "experiment_id": "實驗編號",
@@ -96,22 +108,33 @@ if uploaded_files:
               ]
             }
             注意：
-            1. 仔細辨識印刷文字與原子筆手寫註記（劃掉的 abort 請將 result 標註為 abort）。
-            2. 如果題號有被劃掉重寫，依實際標記狀態解析。
+            1. 請依序整合 Page 1 與 Page 2 的試次。
+            2. 仔細辨識印刷文字與原子筆手寫註記（被劃掉的 abort 標註為 abort；手寫修改箭頭以修改後的結果為準）。
             """
 
             for idx, file in enumerate(uploaded_files):
-                status_text.text(f"正在分析第 {idx + 1}/{len(uploaded_files)} 張報表：{file.name}...")
+                status_text.text(f"正在分析第 {idx + 1}/{len(uploaded_files)} 個檔案：{file.name}...")
                 try:
-                    bytes_data = file.read()
-                    mime_type = file.type or "image/jpeg"
+                    file_bytes = file.read()
+                    content_parts = []
+
+                    if file.name.lower().endswith('.pdf'):
+                        # PDF 轉圖片
+                        pil_images = convert_pdf_to_images(file_bytes)
+                        for img in pil_images:
+                            buf = io.BytesIO()
+                            img.save(buf, format="JPEG")
+                            content_parts.append(types.Part.from_bytes(data=buf.getvalue(), mime_type="image/jpeg"))
+                    else:
+                        # 一般圖檔
+                        mime_type = file.type or "image/jpeg"
+                        content_parts.append(types.Part.from_bytes(data=file_bytes, mime_type=mime_type))
+
+                    content_parts.append(prompt)
 
                     response = client.models.generate_content(
                         model='gemini-2.5-flash',
-                        contents=[
-                            types.Part.from_bytes(data=bytes_data, mime_type=mime_type),
-                            prompt
-                        ],
+                        contents=content_parts,
                         config=types.GenerateContentConfig(response_mime_type="application/json")
                     )
                     data = json.loads(response.text)
