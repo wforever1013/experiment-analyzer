@@ -5,7 +5,8 @@ import io
 import re
 import pypdfium2 as pdfium
 from PIL import Image
-import google.generativeai as genai
+from google import genai
+from google.genai import types
 
 st.set_page_config(page_title="嬰幼兒聽知覺實驗報表分析系統", layout="wide")
 
@@ -80,12 +81,7 @@ if uploaded_files:
     else:
         if st.button("🚀 開始批次辨識與分析", type="primary"):
             cleaned_key = api_key.strip()
-            genai.configure(api_key=cleaned_key)
-            
-            # 直接鎖定目前通用且穩定支援的視覺模型
-            target_model = 'gemini-2.0-flash'
-            st.info(f"💡 目前連線成功，使用模型：`{target_model}`")
-            model = genai.GenerativeModel(target_model)
+            client = genai.Client(api_key=cleaned_key)
             
             results = []
             progress_bar = st.progress(0)
@@ -119,21 +115,23 @@ if uploaded_files:
 
                     if file.name.lower().endswith('.pdf'):
                         pil_images = convert_pdf_to_images(file_bytes)
-                        content_parts.extend(pil_images)
+                        for img in pil_images:
+                            buf = io.BytesIO()
+                            img.save(buf, format="JPEG")
+                            content_parts.append(types.Part.from_bytes(data=buf.getvalue(), mime_type="image/jpeg"))
                     else:
-                        img = Image.open(io.BytesIO(file_bytes))
-                        content_parts.append(img)
+                        mime_type = file.type or "image/jpeg"
+                        content_parts.append(types.Part.from_bytes(data=file_bytes, mime_type=mime_type))
 
                     content_parts.append(prompt)
 
-                    response = model.generate_content(content_parts)
-                    raw_text = response.text.strip()
+                    response = client.models.generate_content(
+                        model='gemini-2.5-flash',
+                        contents=content_parts,
+                        config=types.GenerateContentConfig(response_mime_type="application/json")
+                    )
                     
-                    raw_text = re.sub(r'^```json\s*', '', raw_text)
-                    raw_text = re.sub(r'^```\s*', '', raw_text)
-                    raw_text = re.sub(r'\s*```$', '', raw_text)
-
-                    data = json.loads(raw_text)
+                    data = json.loads(response.text)
                     stats = calculate_criterion_7(data.get("trials", []))
 
                     results.append({
