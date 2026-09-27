@@ -82,34 +82,12 @@ if uploaded_files:
             cleaned_key = api_key.strip()
             genai.configure(api_key=cleaned_key)
             
-            try:
-                supported_models = [
-                    m.name for m in genai.list_models() 
-                    if 'generateContent' in m.supported_generation_methods
-                ]
-            except Exception as e:
-                st.error(f"金鑰驗證失敗：{e}")
-                st.stop()
-
-            target_model = None
-            preferred_candidates = [
-                'models/gemini-2.0-flash',
-                'models/gemini-1.5-flash',
-                'models/gemini-1.5-pro'
-            ]
-            for cand in preferred_candidates:
-                if cand in supported_models:
-                    target_model = cand
-                    break
-            
-            if not target_model:
-                flash_cands = [m for m in supported_models if 'flash' in m.lower()]
-                target_model = flash_cands[0] if flash_cands else supported_models[0]
-            
+            # 直接鎖定目前通用且穩定支援的視覺模型
+            target_model = 'gemini-2.0-flash'
             st.info(f"💡 目前連線成功，使用模型：`{target_model}`")
             model = genai.GenerativeModel(target_model)
-            results = []
             
+            results = []
             progress_bar = st.progress(0)
             status_text = st.empty()
 
