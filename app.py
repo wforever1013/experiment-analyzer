@@ -12,23 +12,18 @@ st.set_page_config(page_title="嬰幼兒聽知覺實驗報表分析系統", layo
 st.title("👶 嬰幼兒聽知覺實驗報表分析系統")
 st.markdown("支援 **PDF（自動合併 Page 1 與 Page 2）** 及一般圖片。自動排除 `abort` 與 `wake-up` 試次，辨識手寫塗改並計算連續 7 次正確。")
 
-# 側邊欄設定
 with st.sidebar:
     st.header("⚙️ 系統設定")
     api_key = st.text_input("請輸入 Gemini API Key", type="password", help="用於辨識報表與手寫筆跡")
     st.markdown("[👉 點此免費取得 Gemini API Key](https://aistudio.google.com/app/apikey)")
 
 def calculate_criterion_7(trials):
-    """計算連續 7 次正確邏輯"""
     valid_trials = []
     for t in trials:
         t_type = str(t.get("trial_type", "")).lower()
         res = str(t.get("result", "")).lower()
-        
-        # 排除包含 abort 與 wake-up 的試次
         if "abort" in res or "abort" in t_type or "wake-up" in t_type or "wakeup" in t_type:
             continue
-        
         is_corr = (res == "hit" or res == "correct reject")
         valid_trials.append({
             "num": t.get("trial_num"),
@@ -65,7 +60,6 @@ def calculate_criterion_7(trials):
     }
 
 def convert_pdf_to_images(pdf_bytes):
-    """將 PDF 各頁轉為 PIL Image 列表"""
     pdf = pdfium.PdfDocument(pdf_bytes)
     images = []
     for page in pdf:
@@ -74,7 +68,6 @@ def convert_pdf_to_images(pdf_bytes):
         images.append(pil_image)
     return images
 
-# 檔案上傳區
 uploaded_files = st.file_uploader(
     "請選擇或拖曳上傳報表（支援 2 頁式 PDF 或多張 JPG/PNG 圖片）", 
     type=["pdf", "jpg", "jpeg", "png"], 
@@ -89,17 +82,15 @@ if uploaded_files:
             cleaned_key = api_key.strip()
             genai.configure(api_key=cleaned_key)
             
-            # 動態獲取當前金鑰可用模型清單
             try:
                 supported_models = [
                     m.name for m in genai.list_models() 
                     if 'generateContent' in m.supported_generation_methods
                 ]
             except Exception as e:
-                st.error(f"金鑰驗證失敗，無法獲取模型清單：{e}")
+                st.error(f"金鑰驗證失敗：{e}")
                 st.stop()
 
-            # 依序匹配長期穩定可用的模型名稱
             target_model = None
             preferred_candidates = [
                 'models/gemini-2.0-flash',
@@ -111,12 +102,11 @@ if uploaded_files:
                     target_model = cand
                     break
             
-            # 若無偏好模型，則優先挑選任何包含 flash 的可用模型
             if not target_model:
                 flash_cands = [m for m in supported_models if 'flash' in m.lower()]
                 target_model = flash_cands[0] if flash_cands else supported_models[0]
             
-            st.info(f"💡 目前連線成功，正在使用模型：`{target_model}`")
+            st.info(f"💡 目前連線成功，使用模型：`{target_model}`")
             model = genai.GenerativeModel(target_model)
             results = []
             
@@ -161,7 +151,6 @@ if uploaded_files:
                     response = model.generate_content(content_parts)
                     raw_text = response.text.strip()
                     
-                    # 清理 markdown 標記以利解析 JSON
                     raw_text = re.sub(r'^```json\s*', '', raw_text)
                     raw_text = re.sub(r'^```\s*', '', raw_text)
                     raw_text = re.sub(r'\s*```$', '', raw_text)
@@ -189,3 +178,25 @@ if uploaded_files:
                         "達成時Trial": "-",
                         "達成區間": "-",
                         "最高連續次數": 0,
+                        "有效試次數": 0,
+                        "手寫修正備註": str(e)
+                    })
+
+                progress_bar.progress((idx + 1) / len(uploaded_files))
+
+            status_text.success("🎉 所有報表分析完成！")
+            
+            df = pd.DataFrame(results)
+            st.dataframe(df, use_container_width=True)
+
+            output = io.BytesIO()
+            with pd.ExcelWriter(output, engine='openpyxl') as writer:
+                df.to_excel(writer, index=False, sheet_name="統計成果")
+            excel_data = output.getvalue()
+
+            st.download_button(
+                label="📥 下載 Excel 分析成果表",
+                data=excel_data,
+                file_name="實驗連續7次正確判定結果.xlsx",
+                mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+            )
