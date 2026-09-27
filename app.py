@@ -12,23 +12,18 @@ st.set_page_config(page_title="嬰幼兒聽知覺實驗報表分析系統", layo
 st.title("👶 嬰幼兒聽知覺實驗報表分析系統")
 st.markdown("支援 **PDF（自動合併 Page 1 與 Page 2）** 及一般圖片。自動排除 `abort` 與 `wake-up` 試次，辨識手寫塗改並計算連續 7 次正確。")
 
-# 側邊欄設定
 with st.sidebar:
     st.header("⚙️ 系統設定")
     api_key = st.text_input("請輸入 Gemini API Key", type="password", help="用於辨識報表與手寫筆跡")
     st.markdown("[👉 點此免費取得 Gemini API Key](https://aistudio.google.com/app/apikey)")
 
 def calculate_criterion_7(trials):
-    """計算連續 7 次正確邏輯"""
     valid_trials = []
     for t in trials:
         t_type = str(t.get("trial_type", "")).lower()
         res = str(t.get("result", "")).lower()
-        
-        # 排除包含 abort 與 wake-up 的試次
         if "abort" in res or "abort" in t_type or "wake-up" in t_type or "wakeup" in t_type:
             continue
-        
         is_corr = (res == "hit" or res == "correct reject")
         valid_trials.append({
             "num": t.get("trial_num"),
@@ -65,7 +60,6 @@ def calculate_criterion_7(trials):
     }
 
 def convert_pdf_to_images(pdf_bytes):
-    """將 PDF 各頁轉為 PIL Image 列表"""
     pdf = pdfium.PdfDocument(pdf_bytes)
     images = []
     for page in pdf:
@@ -74,7 +68,6 @@ def convert_pdf_to_images(pdf_bytes):
         images.append(pil_image)
     return images
 
-# 檔案上傳區
 uploaded_files = st.file_uploader(
     "請選擇或拖曳上傳報表（支援 2 頁式 PDF 或多張 JPG/PNG 圖片）", 
     type=["pdf", "jpg", "jpeg", "png"], 
@@ -88,17 +81,22 @@ if uploaded_files:
         if st.button("🚀 開始批次辨識與分析", type="primary"):
             genai.configure(api_key=api_key.strip())
             
-            # 動態獲取當前 API Key 真正支援的最新可用模型
-            available_models = [
+            # 自動檢測可用模型列表
+            supported_models = [
                 m.name for m in genai.list_models() 
                 if 'generateContent' in m.supported_generation_methods
             ]
             
-            # 優先挑選 flash 類型的模型，若無則挑選第一個可用模型
-            flash_models = [m for m in available_models if 'flash' in m.lower()]
-            selected_model_name = flash_models[0] if flash_models else available_models[0]
+            # 優先比對可用模型
+            target_model = None
+            for cand in ['models/gemini-2.0-flash', 'models/gemini-2.5-flash', 'models/gemini-1.5-flash', 'models/gemini-pro']:
+                if cand in supported_models:
+                    target_model = cand
+                    break
+            if not target_model:
+                target_model = supported_models[0] if supported_models else 'models/gemini-2.0-flash'
             
-            model = genai.GenerativeModel(selected_model_name)
+            model = genai.GenerativeModel(target_model)
             results = []
             
             progress_bar = st.progress(0)
@@ -125,7 +123,7 @@ if uploaded_files:
             """
 
             for idx, file in enumerate(uploaded_files):
-                status_text.text(f"正在分析第 {idx + 1}/{len(uploaded_files)} 個檔案：{file.name} (使用模型: {selected_model_name})...")
+                status_text.text(f"正在分析第 {idx + 1}/{len(uploaded_files)} 個檔案：{file.name}（使用模型: {target_model}）...")
                 try:
                     file_bytes = file.read()
                     content_parts = []
@@ -179,7 +177,6 @@ if uploaded_files:
             df = pd.DataFrame(results)
             st.dataframe(df, use_container_width=True)
 
-            # 匯出 Excel
             output = io.BytesIO()
             with pd.ExcelWriter(output, engine='openpyxl') as writer:
                 df.to_excel(writer, index=False, sheet_name="統計成果")
