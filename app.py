@@ -3,10 +3,10 @@ import pandas as pd
 import json
 import io
 import re
+import base64
+import requests
 import pypdfium2 as pdfium
 from PIL import Image
-from google import genai
-from google.genai import types
 
 st.set_page_config(page_title="嬰幼兒聽知覺實驗報表分析系統", layout="wide")
 
@@ -60,14 +60,17 @@ def calculate_criterion_7(trials):
         "valid_count": len(valid_trials)
     }
 
-def convert_pdf_to_images(pdf_bytes):
+def convert_pdf_to_base64_list(pdf_bytes):
     pdf = pdfium.PdfDocument(pdf_bytes)
-    images = []
+    b64_list = []
     for page in pdf:
         bitmap = page.render(scale=2.0)
         pil_image = bitmap.to_pil()
-        images.append(pil_image)
-    return images
+        buf = io.BytesIO()
+        pil_image.save(buf, format="JPEG")
+        b64_str = base64.b64encode(buf.getvalue()).decode('utf-8')
+        b64_list.append(b64_str)
+    return b64_list
 
 uploaded_files = st.file_uploader(
     "請選擇或拖曳上傳報表（支援 2 頁式 PDF 或多張 JPG/PNG 圖片）", 
@@ -81,13 +84,11 @@ if uploaded_files:
     else:
         if st.button("🚀 開始批次辨識與分析", type="primary"):
             cleaned_key = api_key.strip()
-            client = genai.Client(api_key=cleaned_key)
-            
             results = []
             progress_bar = st.progress(0)
             status_text = st.empty()
 
-            prompt = """
+            prompt_text = """
             請分析這份嬰幼兒聽知覺實驗報表（若有多頁請跨頁合併所有試次，通常有 30 題左右）。
             提取以下資訊並輸出成純 JSON 格式（不要包含 markdown）：
             {
@@ -107,31 +108,55 @@ if uploaded_files:
             2. 仔細辨識印刷文字與原子筆手寫註記（被劃掉的 abort 標註為 abort；手寫修改箭頭以修改後的結果為準）。
             """
 
+            # 採用官方標準 REST API 端點
+            api_url = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key={cleaned_key}"
+
             for idx, file in enumerate(uploaded_files):
                 status_text.text(f"正在分析第 {idx + 1}/{len(uploaded_files)} 個檔案：{file.name}...")
                 try:
                     file_bytes = file.read()
-                    content_parts = []
+                    parts = []
 
                     if file.name.lower().endswith('.pdf'):
-                        pil_images = convert_pdf_to_images(file_bytes)
-                        for img in pil_images:
-                            buf = io.BytesIO()
-                            img.save(buf, format="JPEG")
-                            content_parts.append(types.Part.from_bytes(data=buf.getvalue(), mime_type="image/jpeg"))
+                        b64_images = convert_pdf_to_base64_list(file_bytes)
+                        for b64 in b64_images:
+                            parts.append({
+                                "inline_data": {
+                                    "mime_type": "image/jpeg",
+                                    "data": b64
+                                }
+                            })
                     else:
                         mime_type = file.type or "image/jpeg"
-                        content_parts.append(types.Part.from_bytes(data=file_bytes, mime_type=mime_type))
+                        b64_str = base64.b64encode(file_bytes).decode('utf-8')
+                        parts.append({
+                            "inline_data": {
+                                "mime_type": mime_type,
+                                "data": b64_str
+                            }
+                        })
 
-                    content_parts.append(prompt)
+                    parts.append({"text": prompt_text})
 
-                    response = client.models.generate_content(
-                        model='gemini-2.5-flash',
-                        contents=content_parts,
-                        config=types.GenerateContentConfig(response_mime_type="application/json")
-                    )
-                    
-                    data = json.loads(response.text)
+                    payload = {
+                        "contents": [{"parts": parts}],
+                        "generationConfig": {
+                            "responseMimeType": "application/json"
+                        }
+                    }
+
+                    res = requests.post(api_url, json=payload, timeout=90)
+                    if res.status_code != 200:
+                        raise Exception(f"API 回應錯誤 ({res.status_code}): {res.text}")
+
+                    resp_json = res.json()
+                    raw_text = resp_json['candidates'][0]['content']['parts'][0]['text']
+
+                    raw_text = re.sub(r'^```json\s*', '', raw_text.strip())
+                    raw_text = re.sub(r'^```\s*', '', raw_text)
+                    raw_text = re.sub(r'\s*```$', '', raw_text)
+
+                    data = json.loads(raw_text)
                     stats = calculate_criterion_7(data.get("trials", []))
 
                     results.append({
